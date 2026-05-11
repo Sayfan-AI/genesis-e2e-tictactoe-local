@@ -18,6 +18,29 @@
             color: #222;
         }
         h1 { margin: 0 0 1rem; }
+        #mode {
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            font-size: 0.95rem;
+        }
+        #mode label {
+            cursor: pointer;
+            padding: 0.35rem 0.75rem;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: #fff;
+            user-select: none;
+        }
+        #mode input[type="radio"] {
+            margin-right: 0.35rem;
+            vertical-align: middle;
+        }
+        #mode label:has(input:checked) {
+            background: #222;
+            color: #fff;
+            border-color: #222;
+        }
         #status {
             font-size: 1.25rem;
             margin-bottom: 1rem;
@@ -64,6 +87,10 @@
 </head>
 <body>
     <h1>Tic-Tac-Toe</h1>
+    <div id="mode" role="radiogroup" aria-label="Game mode">
+        <label><input type="radio" name="mode" value="two-player" checked>Two players</label>
+        <label><input type="radio" name="mode" value="vs-computer">vs Computer</label>
+    </div>
     <div id="status">X's turn</div>
     <div id="board">
         <button data-cell="0" aria-label="cell 0"></button>
@@ -88,14 +115,21 @@
                 [0, 4, 8], [2, 4, 6]             // diagonals
             ];
 
+            // Human is always X; computer is always O in vs-computer mode.
+            const HUMAN = 'X';
+            const COMPUTER = 'O';
+
             const cells = Array.from(document.querySelectorAll('[data-cell]'))
                 .sort((a, b) => Number(a.dataset.cell) - Number(b.dataset.cell));
             const statusEl = document.getElementById('status');
             const resetEl = document.getElementById('reset');
+            const modeInputs = Array.from(document.querySelectorAll('#mode input[name="mode"]'));
 
-            let board;       // array of 9: '', 'X', or 'O'
+            let board;         // array of 9: '', 'X', or 'O'
             let currentPlayer;
             let gameOver;
+            let mode;          // 'two-player' | 'vs-computer'
+            let computerThinking = false;
 
             function checkWinner(b) {
                 for (const [a, c, d] of WINNING_LINES) {
@@ -110,44 +144,116 @@
                 return b.every(v => v !== '');
             }
 
+            // Minimax: returns { score, move } for `player` to move on `b`.
+            // Scores: COMPUTER win = +10 - depth, HUMAN win = -10 + depth, draw = 0.
+            // Depth bias makes the computer prefer faster wins and slower losses.
+            function minimax(b, player, depth) {
+                const winner = checkWinner(b);
+                if (winner === COMPUTER) return { score: 10 - depth, move: -1 };
+                if (winner === HUMAN) return { score: depth - 10, move: -1 };
+                if (isDraw(b)) return { score: 0, move: -1 };
+
+                const maximizing = player === COMPUTER;
+                let best = {
+                    score: maximizing ? -Infinity : Infinity,
+                    move: -1,
+                };
+                for (let i = 0; i < 9; i++) {
+                    if (b[i] !== '') continue;
+                    b[i] = player;
+                    const next = minimax(b, player === COMPUTER ? HUMAN : COMPUTER, depth + 1);
+                    b[i] = '';
+                    if (maximizing ? next.score > best.score : next.score < best.score) {
+                        best = { score: next.score, move: i };
+                    }
+                }
+                return best;
+            }
+
+            function pickComputerMove(b) {
+                return minimax(b.slice(), COMPUTER, 0).move;
+            }
+
             function render() {
                 for (let i = 0; i < 9; i++) {
                     cells[i].textContent = board[i];
-                    cells[i].disabled = gameOver || board[i] !== '';
+                    // Lock the board while the computer is "thinking" so the
+                    // human can't sneak a second move in.
+                    cells[i].disabled = gameOver || board[i] !== '' || computerThinking;
                 }
             }
 
-            function handleClick(i) {
-                if (gameOver || board[i] !== '') return;
-                board[i] = currentPlayer;
-
+            function applyMove(i, player) {
+                board[i] = player;
                 const winner = checkWinner(board);
                 if (winner) {
                     gameOver = true;
                     statusEl.textContent = winner + ' wins!';
-                } else if (isDraw(board)) {
+                    return;
+                }
+                if (isDraw(board)) {
                     gameOver = true;
                     statusEl.textContent = "It's a draw";
-                } else {
-                    currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
-                    statusEl.textContent = currentPlayer + "'s turn";
+                    return;
                 }
+                currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
+                statusEl.textContent = currentPlayer + "'s turn";
+            }
+
+            function scheduleComputerMove() {
+                if (gameOver || mode !== 'vs-computer' || currentPlayer !== COMPUTER) return;
+                computerThinking = true;
                 render();
+                // Small delay so the human sees their move land before the
+                // computer responds. Stays well under the ~1s budget.
+                setTimeout(() => {
+                    // Re-check: a reset or mode switch may have happened.
+                    if (gameOver || mode !== 'vs-computer' || currentPlayer !== COMPUTER) {
+                        computerThinking = false;
+                        render();
+                        return;
+                    }
+                    const move = pickComputerMove(board);
+                    if (move >= 0) applyMove(move, COMPUTER);
+                    computerThinking = false;
+                    render();
+                }, 250);
+            }
+
+            function handleClick(i) {
+                if (gameOver || board[i] !== '' || computerThinking) return;
+                // In vs-computer mode, only the human (X) clicks; O is the
+                // computer and is played via scheduleComputerMove.
+                if (mode === 'vs-computer' && currentPlayer !== HUMAN) return;
+                applyMove(i, currentPlayer);
+                render();
+                scheduleComputerMove();
             }
 
             function reset() {
                 board = ['', '', '', '', '', '', '', '', ''];
                 currentPlayer = 'X';
                 gameOver = false;
+                computerThinking = false;
                 statusEl.textContent = "X's turn";
                 render();
+                // If somehow the computer would move first (not the case
+                // today since X always starts), this would dispatch it.
+                scheduleComputerMove();
+            }
+
+            function onModeChange(e) {
+                mode = e.target.value;
+                reset();
             }
 
             cells.forEach((cell, i) => {
                 cell.addEventListener('click', () => handleClick(i));
             });
             resetEl.addEventListener('click', reset);
+            modeInputs.forEach(input => input.addEventListener('change', onModeChange));
 
+            mode = (modeInputs.find(i => i.checked) || modeInputs[0]).value;
             reset();
         })();
     </script>
